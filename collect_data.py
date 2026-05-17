@@ -62,6 +62,7 @@ SEASONS = [
     (2022, "2223", "season-2223.csv"),
     (2023, "2324", "season-2324.csv"),
     (2024, "2425", "season-2425.csv"),
+    (2025, "2526", "season-2526.csv"),
 ]
 
 
@@ -132,7 +133,7 @@ async def fetch_understat_all() -> pd.DataFrame:
         u = understat.Understat(session)
         dfs = []
 
-        for year in range(2014, 2025):
+        for year in range(2014, 2026):
             try:
                 matches = await u.get_league_results("EPL", year)
                 rows = []
