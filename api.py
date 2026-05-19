@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from Features import process_matches
 from feature_engineering import add_features
 from simulator import run_simulation
+from simulator_2627 import run_simulation_2627
 
 FEATURE_COLS_PATH = "model/feature_cols_full.json"
 MODEL_PATH = "model/xgb_full.json"
@@ -252,7 +253,28 @@ def simulate():
                 "team": team,
                 "elo": round(stats["elo"]),
                 "title_prob": stats["title_prob"],
-                "top4_prob": stats["top4_prob"],
+                "top5_prob": stats.get("top5_prob", stats.get("top4_prob", 0)),
+                "top6_prob": stats["top6_prob"],
+                "relegation_prob": stats["relegation_prob"],
+                "avg_position": stats["avg_position"],
+            }
+            for i, (team, stats) in enumerate(sorted_teams)
+        ]
+    }
+
+
+@app.get("/simulate2627")
+def simulate_2627():
+    results = run_simulation_2627(n=10000)
+    sorted_teams = sorted(results.items(), key=lambda x: x[1]["avg_position"])
+    return {
+        "table": [
+            {
+                "position": i + 1,
+                "team": team,
+                "elo": round(stats["elo"]),
+                "title_prob": stats["title_prob"],
+                "top5_prob": stats.get("top5_prob", stats.get("top4_prob", 0)),
                 "top6_prob": stats["top6_prob"],
                 "relegation_prob": stats["relegation_prob"],
                 "avg_position": stats["avg_position"],
