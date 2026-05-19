@@ -186,6 +186,7 @@ const getTeamBadgeFallback = (team) => {
 }
 
 export default function App() {
+  const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
   const predictorRef = useRef(null)
   const table25Ref = useRef(null)
   const table26Ref = useRef(null)
@@ -210,7 +211,7 @@ export default function App() {
     async function fetchTeams() {
       try {
         setLoadingTeams(true)
-        const res = await fetch('/api/teams')
+        const res = await fetch(`${API_BASE}/teams`)
         if (!res.ok) throw new Error('Failed to fetch teams')
         const data = await res.json()
         if (mounted) setTeams(data.teams || [])
@@ -273,7 +274,7 @@ export default function App() {
     }
     try {
       setPredictLoading(true)
-      const res = await fetch('/api/predict', {
+      const res = await fetch(`${API_BASE}/predict`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ home_team: home, away_team: away }),
@@ -292,7 +293,7 @@ export default function App() {
     try {
       setSimulationData(null)
       setSimulationLoading(true)
-      const res = await fetch('/api/simulate')
+      const res = await fetch(`${API_BASE}/simulate`)
       if (!res.ok) throw new Error('Simulation failed')
       const data = await res.json()
       setSimulationData(data.table)
@@ -307,7 +308,7 @@ export default function App() {
     try {
       setSimulationData2627(null)
       setSimulationLoading2627(true)
-      const res = await fetch('/api/simulate2627')
+      const res = await fetch(`${API_BASE}/simulate2627`)
       if (!res.ok) throw new Error('Simulation failed')
       const data = await res.json()
       setSimulationData2627(data.table)
