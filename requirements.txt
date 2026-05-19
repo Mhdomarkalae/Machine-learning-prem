@@ -5,6 +5,4 @@ numpy
 xgboost
 scikit-learn
 scipy
-aiohttp
-understat
 requests
