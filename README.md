@@ -37,8 +37,7 @@ An end-to-end Premier League analytics project that combines match prediction, E
 - `POST /predict` - predict a single match
 - `GET /simulate` - run the 10,000-simulation pre-season forecast
 
-## Recruiter Notes
+## Why I built it 
+As a big soccer fan, I’ve always found myself trying to predict matches before they happen. One day, I thought, “Why not build my own machine learning model to do it?” That idea eventually turned into this project.
 
-- The project shows data collection, feature engineering, model training, and deployment in one repo.
-- The backend is file-driven and does not require secrets or API keys to run locally.
-- The season simulator is deterministic enough for comparison, but still uses stochastic simulation for realistic distributions.
+Looking back, if I were to rebuild it, I would focus more on incorporating player injuries and squad availability into the prediction system, since those factors can heavily impact match outcomes. Even so, I’m really happy with how the project turned out and with everything I learned while building it.
