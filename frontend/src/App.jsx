@@ -653,12 +653,12 @@ export default function App() {
           <div className="metric-tiles">
             <div className="metric-tile">
               <div className="metric-label">Accuracy</div>
-              <div className="metric-value">54.5%</div>
+              <div className="metric-value">53.7%</div>
               <div className="metric-sub">vs 43.4% home-team baseline</div>
             </div>
             <div className="metric-tile">
               <div className="metric-label">Log loss</div>
-              <div className="metric-value">0.988</div>
+              <div className="metric-value">0.989</div>
               <div className="metric-sub">lower is better</div>
             </div>
             <div className="metric-tile">
@@ -670,7 +670,7 @@ export default function App() {
 
           <div className="model-pills">
             <span className="model-pill">XGBoost</span>
-            <span className="model-pill">37 features</span>
+            <span className="model-pill">40 features</span>
             <span className="model-pill">Leak-audited</span>
           </div>
         </section>
