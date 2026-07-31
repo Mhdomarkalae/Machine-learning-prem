@@ -10,10 +10,12 @@ RECENCY_HALFLIFE_DAYS = 180.0
 STRENGTH_TANH_SCALE = 2.0
 FORM_TANH_SCALE = 3.0
 XG_ELO_SCALE = 50.0
-XG_DIFF_SCALE = 2.0
 SMOOTHING_STRENGTH = 6.0
 GOAL_FOR_PRIOR = 1.35
 GOAL_AGAINST_PRIOR = 1.15
+# Expected goals are on the same per-match scale as goals.  Six pseudo-matches
+# makes this prior equally influential as the other smoothed rate features.
+XG_FOR_PRIOR = 1.35
 
 
 def _safe_float(value, default=0.0):
@@ -53,6 +55,8 @@ def _create_context_state(rolling_window, use_time_decay=False):
             "clean_sheets": 0.0,
             "scored": 0.0,
             "points": 0.0,
+            "xg_for": 0.0,
+            "xg_matches": 0.0,
             "last_date": None,
         }
 
@@ -78,6 +82,8 @@ def _create_context_state(rolling_window, use_time_decay=False):
         "_clean_sheets_sum": 0.0,
         "_scored_sum": 0.0,
         "_draws_sum": 0.0,
+        "_xg_for_sum": 0.0,
+        "_xg_matches_sum": 0.0,
     }
 
 
@@ -96,12 +102,14 @@ def _create_team_state(rolling_window, use_time_decay=False):
     }
 
 
-def _push_context_state(context_state, points, goals_for, goals_against, was_win, rolling_window, match_date=None):
+def _push_context_state(context_state, points, goals_for, goals_against, was_win, rolling_window, match_date=None, xg_for=None):
     # Normalize types
     points = float(points)
     goals_for = float(goals_for)
     goals_against = float(goals_against)
     was_win = 1.0 if was_win else 0.0
+    xg_observed = xg_for is not None and pd.notna(xg_for)
+    xg_for = float(xg_for) if xg_observed else 0.0
 
     if context_state.get("mode") == "decay":
         # Exponential decay of stored aggregates since last_date, then add current match
@@ -118,6 +126,8 @@ def _push_context_state(context_state, points, goals_for, goals_against, was_win
             context_state["clean_sheets"] *= factor
             context_state["scored"] *= factor
             context_state["points"] *= factor
+            context_state["xg_for"] *= factor
+            context_state["xg_matches"] *= factor
 
         context_state["matches"] += 1.0
         context_state["wins"] += was_win
@@ -132,11 +142,13 @@ def _push_context_state(context_state, points, goals_for, goals_against, was_win
         context_state["clean_sheets"] += clean_flag
         context_state["scored"] += scored_flag
         context_state["points"] += points
+        context_state["xg_for"] += xg_for
+        context_state["xg_matches"] += 1.0 if xg_observed else 0.0
         context_state["last_date"] = current_date
         return
 
     # Rolling mode: maintain O(1) incremental sums instead of O(n) recomputation
-    entry = (match_date, points, int(was_win), goals_for, goals_against)
+    entry = (match_date, points, int(was_win), goals_for, goals_against, xg_for, int(xg_observed))
     
     # If history is at maxlen, the oldest entry will be discarded; update running sums first
     if "history" in context_state and len(context_state["history"]) == context_state["history"].maxlen:
@@ -155,6 +167,8 @@ def _push_context_state(context_state, points, goals_for, goals_against, was_win
         context_state["_clean_sheets_sum"] = max(0.0, context_state["_clean_sheets_sum"] - old_clean)
         context_state["_scored_sum"] = max(0.0, context_state["_scored_sum"] - old_scored)
         context_state["_draws_sum"] = max(0.0, context_state["_draws_sum"] - old_draw)
+        context_state["_xg_for_sum"] = max(0.0, context_state["_xg_for_sum"] - float(old_entry[5]))
+        context_state["_xg_matches_sum"] = max(0.0, context_state["_xg_matches_sum"] - float(old_entry[6]))
     
     # Append to history (bounded deque automatically discards oldest if full)
     context_state.setdefault("history", deque()).append(entry)
@@ -172,6 +186,8 @@ def _push_context_state(context_state, points, goals_for, goals_against, was_win
     context_state["_clean_sheets_sum"] += clean_flag
     context_state["_scored_sum"] += scored_flag
     context_state["_draws_sum"] += draw_flag
+    context_state["_xg_for_sum"] += xg_for
+    context_state["_xg_matches_sum"] += 1.0 if xg_observed else 0.0
     
     # Maintain aggregate counters from running sums
     context_state["matches"] = float(len(context_state["history"]))
@@ -182,6 +198,8 @@ def _push_context_state(context_state, points, goals_for, goals_against, was_win
     context_state["points"] = float(context_state["_points_sum"])
     context_state["clean_sheets"] = float(context_state.get("_clean_sheets_sum", 0.0))
     context_state["scored"] = float(context_state.get("_scored_sum", 0.0))
+    context_state["xg_for"] = float(context_state["_xg_for_sum"])
+    context_state["xg_matches"] = float(context_state["_xg_matches_sum"])
 
 
 def _push_overall_state(team_state, points, goals_for, goals_against, rolling_window):
@@ -192,6 +210,13 @@ def _push_overall_state(team_state, points, goals_for, goals_against, rolling_wi
 
     if rolling_window and rolling_window > 0:
         team_state["overall_recent_points"].append(float(points))
+
+
+def _rolling_xg_snapshot(context_state):
+    """Return a pre-match xG average with an explicit league-average prior."""
+    observed = max(float(context_state.get("xg_matches", 0.0)), 0.0)
+    total = float(context_state.get("xg_for", 0.0))
+    return (total + XG_FOR_PRIOR * SMOOTHING_STRENGTH) / (observed + SMOOTHING_STRENGTH)
 
 
 def _weighted_context_snapshot(context_state, shared_state, current_date, rolling_window):
@@ -410,15 +435,12 @@ def compute_home_away_stats(
     working_df = _prepare_working_frame(df)
 
     if "home_xg" not in working_df.columns:
-        working_df["home_xg"] = 0.0
+        working_df["home_xg"] = float("nan")
     if "away_xg" not in working_df.columns:
-        working_df["away_xg"] = 0.0
-    if "xg_diff" not in working_df.columns:
-        working_df["xg_diff"] = working_df["home_xg"].fillna(0.0) - working_df["away_xg"].fillna(0.0)
+        working_df["away_xg"] = float("nan")
 
     working_df["home_xg"] = pd.to_numeric(working_df["home_xg"], errors="coerce")
     working_df["away_xg"] = pd.to_numeric(working_df["away_xg"], errors="coerce")
-    working_df["xg_diff"] = pd.to_numeric(working_df["xg_diff"], errors="coerce")
 
     team_states = defaultdict(lambda: _create_team_state(rolling_window, use_time_decay=use_time_decay))
     # Track last played date for each team across all matches (home & away)
@@ -445,14 +467,6 @@ def compute_home_away_stats(
         away_elo_before = _safe_float(getattr(row, "away_elo_before", 0.0), 0.0)
         home_xg = getattr(row, "home_xg", 0.0)
         away_xg = getattr(row, "away_xg", 0.0)
-        xg_diff = getattr(row, "xg_diff", 0.0)
-
-        if pd.isna(home_xg):
-            home_xg = 0.0
-        if pd.isna(away_xg):
-            away_xg = 0.0
-        if pd.isna(xg_diff):
-            xg_diff = 0.0
 
         home_state = team_states[home_team]
         away_state = team_states[away_team]
@@ -512,7 +526,11 @@ def compute_home_away_stats(
         home_form_momentum = home_form_snapshot["form_momentum"] if include_momentum else 0.0
         away_form_momentum = away_form_snapshot["form_momentum"] if include_momentum else 0.0
         elo_form_interaction = _stable_form_interaction(elo_diff, home_form_points_avg, away_form_points_avg)
-        elo_xg_diff = elo_diff + (xg_diff * XG_ELO_SCALE)
+        # Read the state before emitting this match.  Current-match xG is only
+        # supplied to _push_context_state below, after output_rows.append().
+        home_rolling_xg = _rolling_xg_snapshot(home_state["all"])
+        away_rolling_xg = _rolling_xg_snapshot(away_state["all"])
+        elo_xg_diff = elo_diff + ((home_rolling_xg - away_rolling_xg) * XG_ELO_SCALE)
         elo_strength_interaction = math.tanh(elo_diff / 400.0) * home_advantage_index
 
         row_output = row._asdict()
@@ -529,6 +547,9 @@ def compute_home_away_stats(
                 "home_advantage_index": float(home_advantage_index),
                 "elo_diff": float(elo_diff),
                 "elo_xg_diff": float(elo_xg_diff),
+                # Kept as state snapshots for serving; not model inputs.
+                "home_rolling_xg": float(home_rolling_xg),
+                "away_rolling_xg": float(away_rolling_xg),
                 "home_form_points_avg": float(home_form_points_avg),
                 "away_form_points_avg": float(away_form_points_avg),
                 "home_form_momentum": float(home_form_momentum),
@@ -577,11 +598,11 @@ def compute_home_away_stats(
         _push_streak_state(streak_states, home_team, home_points)
         _push_streak_state(streak_states, away_team, away_points)
 
-        _push_context_state(home_state["all"], home_points, home_goals, away_goals, home_win, rolling_window, match_date)
-        _push_context_state(away_state["all"], away_points, away_goals, home_goals, away_win, rolling_window, match_date)
+        _push_context_state(home_state["all"], home_points, home_goals, away_goals, home_win, rolling_window, match_date, home_xg)
+        _push_context_state(away_state["all"], away_points, away_goals, home_goals, away_win, rolling_window, match_date, away_xg)
 
-        _push_context_state(home_state["home"], home_points, home_goals, away_goals, home_win, rolling_window, match_date)
-        _push_context_state(away_state["away"], away_points, away_goals, home_goals, away_win, rolling_window, match_date)
+        _push_context_state(home_state["home"], home_points, home_goals, away_goals, home_win, rolling_window, match_date, home_xg)
+        _push_context_state(away_state["away"], away_points, away_goals, home_goals, away_win, rolling_window, match_date, away_xg)
 
         _push_overall_state(home_state, home_points, home_goals, away_goals, rolling_window)
         _push_overall_state(away_state, away_points, away_goals, home_goals, rolling_window)
@@ -613,3 +634,35 @@ def add_features(
         normalize_strengths=normalize_strengths,
         use_time_decay=use_time_decay,
     )
+
+
+def build_pre_match_features(history_df, fixture, feature_cols):
+    """Replay historical state and emit one fixture without its outcome/xG.
+
+    This is shared by serving and parity checks so the exact read→emit→update
+    implementation used in training is also used for a prediction.
+    """
+    row = {column: float("nan") for column in history_df.columns}
+    row.update(fixture)
+    row["FTHG"] = 0.0
+    row["FTAG"] = 0.0
+    row["FTR"] = float("nan")
+    row["home_xg"] = float("nan")
+    row["away_xg"] = float("nan")
+    combined = pd.concat([history_df, pd.DataFrame([row])], ignore_index=True, sort=False)
+    featured = add_features(combined, preserve_original_order=True)
+    featured["Date"] = pd.to_datetime(featured["Date"], errors="coerce")
+    featured = featured.sort_values("Date", kind="stable").reset_index(drop=True)
+    counts = defaultdict(int)
+    home_counts, away_counts = [], []
+    for match in featured.itertuples(index=False):
+        season = "".join(ch for ch in str(getattr(match, "Season", "")) if ch.isdigit())[-4:]
+        home_key = (match.HomeTeam, season)
+        away_key = (match.AwayTeam, season)
+        home_counts.append(float(counts[home_key]))
+        away_counts.append(float(counts[away_key]))
+        counts[home_key] += 1
+        counts[away_key] += 1
+    featured["home_matches_played"] = home_counts
+    featured["away_matches_played"] = away_counts
+    return featured.iloc[-1][feature_cols].fillna(0.0).to_dict()

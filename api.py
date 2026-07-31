@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from Features import process_matches
-from feature_engineering import add_features
+from feature_engineering import add_features, build_pre_match_features
 from simulator import run_simulation
 from simulator_2627 import run_simulation_2627
 
@@ -20,6 +20,12 @@ DATA_PATH = "Data/master.csv"
 
 TARGET_LABELS = {0: "H", 1: "D", 2: "A"}
 RESULT_LABELS = {"H": "Home Win", "D": "Draw", "A": "Away Win"}
+
+
+def _iso_date(value):
+    if value is None or pd.isna(value):
+        return None
+    return pd.Timestamp(value).date().isoformat()
 
 
 def _normalize_season(value):
@@ -46,6 +52,16 @@ def _add_season_match_counts(df):
     df["home_matches_played"] = home_col
     df["away_matches_played"] = away_col
     return df
+
+
+def build_serving_feature_row(history_df: pd.DataFrame, fixture: dict, feature_cols: list) -> dict:
+    """Replay the training feature state, then emit one future fixture.
+
+    The fixture's result and xG fields are deliberately unknown.  `add_features`
+    reads state and emits before it updates state, so this yields the same xG and
+    H2H snapshots used by training without exposing current-match information.
+    """
+    return build_pre_match_features(history_df, fixture, feature_cols)
 
 
 # Global state
@@ -116,6 +132,7 @@ async def lifespan(app: FastAPI):
     # Load and process data
     df = pd.read_csv(DATA_PATH)
     df = process_matches(df)
+    app_state["history_df"] = df.copy()
     df = add_features(df)
     df = _add_season_match_counts(df)
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -160,6 +177,12 @@ class PredictionResponse(BaseModel):
     away_win_prob: float
     predicted_result: str
     predicted_result_label: str
+    # Data-vintage provenance: the last dated match each team appears in, plus
+    # the dataset's most recent match. Lets the UI flag teams whose features are
+    # stale (e.g. a club that left the Premier League years ago).
+    home_last_match_date: str | None = None
+    away_last_match_date: str | None = None
+    data_max_date: str | None = None
 
 
 @app.get("/")
@@ -188,39 +211,21 @@ def predict(request: PredictionRequest):
     feature_cols = app_state["feature_cols"]
     team_states = app_state["team_states"]
 
-    feature_row = {}
     home_state = team_states.get(home_team, {})
     away_state = team_states.get(away_team, {})
-
-    # Fill home_ and away_ prefixed features from each team's state
-    for col in feature_cols:
-        if col.startswith("home_"):
-            feature_row[col] = home_state.get(col, 0.0)
-        elif col.startswith("away_"):
-            feature_row[col] = away_state.get(col, 0.0)
-        else:
-            feature_row[col] = 0.0
-
-    # Recompute derived features that depend on both teams
-    home_elo = feature_row.get("home_elo_before", 1500.0)
-    away_elo = feature_row.get("away_elo_before", 1500.0)
-    home_xg = feature_row.get("home_xg", 0.0)
-    away_xg = feature_row.get("away_xg", 0.0)
-    xg_diff = home_xg - away_xg
-
-    elo_diff = home_elo - away_elo
-    feature_row["elo_diff"] = elo_diff
-    feature_row["elo_xg_diff"] = elo_diff + (xg_diff * 50.0)
-
-    home_form = feature_row.get("home_form_points_avg", 0.0)
-    away_form = feature_row.get("away_form_points_avg", 0.0)
-    import math
-    elo_component = math.tanh(elo_diff / 400.0)
-    form_component = math.tanh((home_form - away_form) / 3.0)
-    feature_row["elo_form_interaction"] = elo_component * form_component
-
-    home_advantage_index = feature_row.get("home_advantage_index", 0.0)
-    feature_row["elo_strength_interaction"] = elo_component * home_advantage_index
+    history_df = app_state["history_df"]
+    feature_row = build_serving_feature_row(
+        history_df,
+        {
+            "Date": pd.to_datetime(history_df["Date"], errors="coerce").max() + pd.Timedelta(days=1),
+            "Season": history_df.iloc[-1].get("Season"),
+            "HomeTeam": home_team,
+            "AwayTeam": away_team,
+            "home_elo_before": home_state.get("home_elo_before", 1500.0),
+            "away_elo_before": away_state.get("away_elo_before", 1500.0),
+        },
+        feature_cols,
+    )
 
     x = pd.DataFrame([feature_row])[feature_cols].fillna(0.0)
     dmatrix = xgb.DMatrix(x)
@@ -231,6 +236,14 @@ def predict(request: PredictionRequest):
     predicted_class = int(np.argmax(probs))
     predicted_result = TARGET_LABELS[predicted_class]
 
+    # Data-vintage: each team's most recent dated appearance, and the dataset max.
+    full_df = app_state["df"]
+
+    def _last_match_date(team):
+        appears = (full_df["HomeTeam"] == team) | (full_df["AwayTeam"] == team)
+        dates = full_df.loc[appears, "Date"].dropna()
+        return _iso_date(dates.max()) if len(dates) else None
+
     return PredictionResponse(
         home_team=home_team,
         away_team=away_team,
@@ -239,6 +252,9 @@ def predict(request: PredictionRequest):
         away_win_prob=round(float(probs[2]), 4),
         predicted_result=predicted_result,
         predicted_result_label=RESULT_LABELS[predicted_result],
+        home_last_match_date=_last_match_date(home_team),
+        away_last_match_date=_last_match_date(away_team),
+        data_max_date=_iso_date(full_df["Date"].max()),
     )
 
 

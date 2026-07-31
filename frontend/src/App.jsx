@@ -439,6 +439,19 @@ export default function App() {
     </div>
   )
 
+  // Flag a team whose most recent match predates the dataset max by >12 months.
+  // The year comes from the /predict response, not a hardcoded value.
+  const staleYear = (matchDate, maxDate) => {
+    if (!matchDate || !maxDate) return null
+    const d = new Date(matchDate)
+    const max = new Date(maxDate)
+    if (Number.isNaN(d.getTime()) || Number.isNaN(max.getTime())) return null
+    const months = (max - d) / (1000 * 60 * 60 * 24 * 30.44)
+    return months > 12 ? d.getFullYear() : null
+  }
+  const homeStaleYear = result ? staleYear(result.home_last_match_date, result.data_max_date) : null
+  const awayStaleYear = result ? staleYear(result.away_last_match_date, result.data_max_date) : null
+
   return (
     <div className="page">
       <style>{`
@@ -530,6 +543,22 @@ export default function App() {
         .site-footer { margin-top: 18px; padding: 18px 16px 22px; border-top: 1px solid ${COLORS.hero}; color: #92a3be; text-align: center; font-size: 12.5px; line-height: 1.6; }
         .info-box { margin: 0 0 32px; padding: 18px 20px; background: rgba(0, 163, 137, 0.12); border-left: 3px solid ${COLORS.hero}; border-radius: 12px; color: ${COLORS.muted}; font-size: 13.5px; line-height: 1.6; }
         .info-box strong { color: ${COLORS.white}; }
+        .model-panel { margin-top: 0; }
+        .metric-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+        .metric-tile { background: linear-gradient(180deg, rgba(10, 22, 40, 0.92), rgba(15, 31, 61, 0.92)); border: 1px solid ${COLORS.border}; border-radius: 22px; padding: 22px 20px; text-align: left; }
+        .metric-label { color: ${COLORS.muted}; font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px; }
+        .metric-value { color: ${COLORS.white}; font-size: clamp(40px, 5.5vw, 56px); font-weight: 900; line-height: 1; letter-spacing: -1.4px; }
+        .metric-sub { color: ${COLORS.muted}; font-size: 13px; font-weight: 600; margin-top: 10px; line-height: 1.4; }
+        .model-pills { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+        .model-pill { display: inline-flex; align-items: center; padding: 6px 14px; border-radius: 20px; background: rgba(15, 31, 61, 0.9); border: 1px solid rgba(0, 255, 135, 0.22); color: ${COLORS.white}; font-size: 12.5px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
+        .model-lead { margin: 2px 0 22px; max-width: 940px; font-size: clamp(17px, 2.1vw, 22px); font-weight: 700; line-height: 1.5; letter-spacing: -0.2px; color: ${COLORS.muted}; }
+        .model-lead .lead-hl { color: ${COLORS.accent}; font-weight: 900; }
+        .model-lead .lead-em { color: ${COLORS.white}; font-weight: 800; }
+        .data-note { margin-top: 16px; color: ${COLORS.muted}; font-size: 12.5px; line-height: 1.6; }
+        .stale-warn { margin-top: 14px; padding: 11px 14px; background: ${COLORS.redTint}; border-left: 3px solid ${COLORS.red}; border-radius: 12px; color: #ffdada; font-size: 13px; font-weight: 600; line-height: 1.55; }
+        .stale-warn strong { color: ${COLORS.white}; }
+        .stale-warn > div + div { margin-top: 6px; }
+        @media (max-width: 760px) { .metric-tiles { grid-template-columns: 1fr; } }
         @media (max-width: 1080px) {
           .hero-inner { flex-direction: column; align-items: flex-start; min-height: auto; }
           .hero-copy, .hero-visual { flex: 1 1 auto; max-width: 100%; width: 100%; }
@@ -566,14 +595,12 @@ export default function App() {
             <button className="nav-link" onClick={() => scrollToSection(table26Ref)}>Table 26/27</button>
           </nav>
 
-          <div className="search-pill" aria-hidden="true">⌕</div>
         </div>
       </header>
 
       <section className="hero">
         <div className="hero-inner">
           <div className="hero-copy">
-            <div className="hero-pill">🤖 AI-Powered Predictions</div>
             <h1 className="hero-heading">
               <span className="hero-heading-line1">PREDICT</span>
               <span className="hero-heading-line2">
@@ -611,6 +638,43 @@ export default function App() {
       </section>
 
       <main className="content">
+        <section className="section model-panel">
+          <div className="section-header">
+            <div>
+              <h2 className="section-title">About the <span>model</span></h2>
+              <div className="section-underline" />
+            </div>
+          </div>
+
+          <p className="model-lead">
+            Trained on <span className="lead-hl">8,650</span> Premier League matches from <span className="lead-hl">2000/01 through 2022/23</span>. Tested on <span className="lead-hl">2023/24 and 2024/25</span> — <span className="lead-em">seasons the model never saw during training.</span>
+          </p>
+
+          <div className="metric-tiles">
+            <div className="metric-tile">
+              <div className="metric-label">Accuracy</div>
+              <div className="metric-value">54.5%</div>
+              <div className="metric-sub">vs 43.4% home-team baseline</div>
+            </div>
+            <div className="metric-tile">
+              <div className="metric-label">Log loss</div>
+              <div className="metric-value">0.988</div>
+              <div className="metric-sub">lower is better</div>
+            </div>
+            <div className="metric-tile">
+              <div className="metric-label">Test set</div>
+              <div className="metric-value">760</div>
+              <div className="metric-sub">held-out matches</div>
+            </div>
+          </div>
+
+          <div className="model-pills">
+            <span className="model-pill">XGBoost</span>
+            <span className="model-pill">37 features</span>
+            <span className="model-pill">Leak-audited</span>
+          </div>
+        </section>
+
         <div className="info-box">
           <strong>How it works:</strong> The 2025/26 table uses data from before this season started. The 2026/27 table is a separate preview built on 2025/26 data. Each prediction is made with only information available before those matches kick off—no data leakage.
         </div>
@@ -691,6 +755,21 @@ export default function App() {
                   <div className="bar-outer"><div className="bar-inner" style={{ width: `${(result.away_win_prob || 0) * 100}%`, background: COLORS.red }} /></div>
                   <div className="prob-num">{Math.round((result.away_win_prob || 0) * 100)}%</div>
                 </div>
+              </div>
+
+              {(homeStaleYear || awayStaleYear) ? (
+                <div className="stale-warn">
+                  {homeStaleYear ? (
+                    <div>⚠️ <strong>{result.home_team}</strong> last appears in the data in {homeStaleYear} — it is evaluated on that season&apos;s form, not current.</div>
+                  ) : null}
+                  {awayStaleYear ? (
+                    <div>⚠️ <strong>{result.away_team}</strong> last appears in the data in {awayStaleYear} — it is evaluated on that season&apos;s form, not current.</div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="data-note">
+                Features come from each team&apos;s most recent appearance in the dataset, not a date you pick. Currently active teams use recent form (data runs through May 2026); teams no longer in the Premier League fall back to their last top-flight season — so a club like Blackburn is evaluated on ~2012 form.
               </div>
             </div>
           )}

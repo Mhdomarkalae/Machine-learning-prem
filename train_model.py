@@ -4,9 +4,6 @@ from collections import defaultdict
 
 import pandas as pd
 from sklearn.metrics import accuracy_score, confusion_matrix, log_loss
-from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
-from sklearn.utils.class_weight import compute_sample_weight
-from scipy.stats import randint, uniform
 from xgboost import XGBClassifier
 
 try:
@@ -42,7 +39,9 @@ FULL_FEATURES = BASE_FEATURES + XG_FEATURES
 
 TARGET_MAP = {"H": 0, "D": 1, "A": 2}
 TARGET_LABELS = ["H", "D", "A"]
-TEST_SEASONS = {"2324", "2425"}
+# Inclusive test boundary.  This is the date of the first held-out fixture;
+# every training row is strictly earlier.
+TEST_CUTOFF = pd.Timestamp("2023-08-11")
 
 
 def _normalize_season(value):
@@ -91,6 +90,16 @@ def _add_season_match_counts(df):
     return df
 
 
+def _market_baseline(test_df, y_test):
+    """Normalized bookmaker implied probabilities, where all three odds exist."""
+    odds = test_df[["B365H", "B365D", "B365A"]].apply(pd.to_numeric, errors="coerce")
+    valid = (odds > 0.0).all(axis=1)
+    implied = 1.0 / odds.loc[valid].to_numpy()
+    probs = implied / implied.sum(axis=1, keepdims=True)
+    targets = y_test.loc[valid]
+    return log_loss(targets, probs, labels=[0, 1, 2]), accuracy_score(targets, probs.argmax(axis=1)), int(valid.sum())
+
+
 def main():
     df = pd.read_csv("Data/master.csv")
     df = process_matches(df)
@@ -112,17 +121,16 @@ def main():
 
     df[FULL_FEATURES] = df[FULL_FEATURES].fillna(0.0)
 
-    if "Season" in df.columns:
-        season_key = df["Season"].map(_normalize_season)
-        test_mask = season_key.isin(TEST_SEASONS)
-    else:
-        test_mask = df["Date"] >= pd.Timestamp("2023-08-01")
+    test_mask = df["Date"] >= TEST_CUTOFF
 
     train_df = df[~test_mask].copy()
     test_df = df[test_mask].copy()
 
     print(f"Train rows: {len(train_df)}")
     print(f"Test rows: {len(test_df)}")
+    print(f"Test cutoff: {TEST_CUTOFF.date()} (inclusive)")
+    print(f"Train dates: {train_df['Date'].min().date()} to {train_df['Date'].max().date()}")
+    print(f"Test dates:  {test_df['Date'].min().date()} to {test_df['Date'].max().date()}")
 
     x_train_base = train_df[BASE_FEATURES]
     x_test_base = test_df[BASE_FEATURES]
@@ -130,9 +138,6 @@ def main():
     x_test_full = test_df[FULL_FEATURES]
     y_train = train_df["target"]
     y_test = test_df["target"]
-
-    class_weights = {0: 1.0, 1: 2.0, 2: 1.0}
-    sample_weights = compute_sample_weight(class_weight=class_weights, y=y_train)
 
     params = dict(
         objective="multi:softprob",
@@ -149,50 +154,19 @@ def main():
     model_full = XGBClassifier(**params)
     model_base = XGBClassifier(**params)
 
-    model_full.fit(x_train_full, y_train, sample_weight=sample_weights,
+    model_full.fit(x_train_full, y_train,
                    eval_set=[(x_test_full, y_test)], verbose=False)
-    model_base.fit(x_train_base, y_train, sample_weight=sample_weights,
+    model_base.fit(x_train_base, y_train,
                    eval_set=[(x_test_base, y_test)], verbose=False)
-
-    tscv = TimeSeriesSplit(n_splits=5)
-    tuned_model = XGBClassifier(
-        objective="multi:softprob",
-        num_class=3,
-        eval_metric="mlogloss",
-        random_state=42,
-        tree_method="hist",
-    )
-    param_dist = {
-        "max_depth": randint(3, 8),
-        "learning_rate": uniform(0.01, 0.1),
-        "n_estimators": randint(200, 800),
-        "min_child_weight": randint(1, 10),
-        "gamma": uniform(0, 0.5),
-        "subsample": uniform(0.6, 0.4),
-        "colsample_bytree": uniform(0.6, 0.4),
-    }
-    search = RandomizedSearchCV(
-        tuned_model,
-        param_distributions=param_dist,
-        n_iter=40,
-        scoring="neg_log_loss",
-        cv=tscv,
-        verbose=1,
-        random_state=42,
-        n_jobs=-1,
-    )
-    search.fit(x_train_full, y_train, sample_weight=sample_weights)
-    best_model = search.best_estimator_
-    print("\n=== BEST TUNED PARAMS ===")
-    print(search.best_params_)
 
     base_ll, base_acc = _evaluate_model("Base Model (no xG)", model_base, x_test_base, y_test)
     full_ll, full_acc = _evaluate_model("Full Model (with xG)", model_full, x_test_full, y_test)
-    tuned_ll, tuned_acc = _evaluate_model("Tuned Model", best_model, x_test_full, y_test)
 
     train_dist = y_train.value_counts(normalize=True).reindex([0, 1, 2], fill_value=0.0).values
     naive_probs = [train_dist] * len(y_test)
     naive_ll = log_loss(y_test, naive_probs, labels=[0, 1, 2])
+    naive_acc = accuracy_score(y_test, [int(train_dist.argmax())] * len(y_test))
+    market_ll, market_acc, market_n = _market_baseline(test_df, y_test)
 
     print("\n=== FEATURE IMPORTANCES (Full Model) ===")
     importance_df = pd.DataFrame({
@@ -205,14 +179,13 @@ def main():
     print("                  Log Loss    Accuracy")
     print(f"Base (no xG):    {base_ll:.4f}      {base_acc * 100:.1f}%")
     print(f"Full (with xG):  {full_ll:.4f}      {full_acc * 100:.1f}%")
-    print(f"Tuned:           {tuned_ll:.4f}      {tuned_acc * 100:.1f}%")
-    print(f"Naive baseline:  {naive_ll:.4f}")
+    print(f"Market baseline: {market_ll:.4f}      {market_acc * 100:.1f}%  (n={market_n})")
+    print(f"Naive baseline:  {naive_ll:.4f}      {naive_acc * 100:.1f}%")
     print(f"xG improvement:  {base_ll - full_ll:+.4f} log loss  / {((full_acc - base_acc) * 100):+.1f}% accuracy")
 
     os.makedirs("model", exist_ok=True)
     model_full.get_booster().save_model("model/xgb_full.json")
     model_base.get_booster().save_model("model/xgb_base.json")
-    best_model.get_booster().save_model("model/xgb_tuned.json")
 
     with open("model/feature_cols_full.json", "w", encoding="utf-8") as f:
         json.dump(FULL_FEATURES, f)
