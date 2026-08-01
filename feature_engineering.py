@@ -618,6 +618,63 @@ def compute_home_away_stats(
     return result.reset_index(drop=True)
 
 
+XG_ROLL_WINDOW = 6
+XG_ROLL_PRIOR = 1.35
+ROLL_XG_FEATURES = [
+    "home_roll_xg_for", "home_roll_xg_against",
+    "away_roll_xg_for", "away_roll_xg_against",
+]
+
+
+def add_rolling_xg(df, window=XG_ROLL_WINDOW, prior=XG_ROLL_PRIOR):
+    """Add strictly backward-looking rolling mean xG (for/against) per team.
+
+    For each match, each team's mean xG scored (``for``) and conceded
+    (``against``) over that team's previous ``window`` matches, read BEFORE the
+    current fixture -- the current match's own xG is never included.  A team
+    with no observed xG history yet falls back to a league-average ``prior``
+    (never 0.0).  This is the leak-free replacement for ``elo_xg_diff`` and is
+    shared by training and serving so the two stay identical.
+
+    The computation is order-independent: it sorts by ``Date`` internally and
+    writes the columns back aligned to the input frame's index, so callers that
+    rely on ``preserve_original_order`` are unaffected.
+    """
+    work = df.copy()
+    work["Date"] = pd.to_datetime(work.get("Date"), errors="coerce")
+    work = work.sort_values("Date", kind="stable")
+
+    n = len(work)
+    homes = work["HomeTeam"].to_numpy()
+    aways = work["AwayTeam"].to_numpy()
+    idxs = work.index.to_numpy()
+    hx = pd.to_numeric(work["home_xg"], errors="coerce").to_numpy() if "home_xg" in work else [float("nan")] * n
+    ax = pd.to_numeric(work["away_xg"], errors="coerce").to_numpy() if "away_xg" in work else [float("nan")] * n
+
+    xg_for = defaultdict(lambda: deque(maxlen=window))
+    xg_against = defaultdict(lambda: deque(maxlen=window))
+
+    def mean_or_prior(dq):
+        return sum(dq) / len(dq) if len(dq) else prior
+
+    out = {c: [0.0] * n for c in ROLL_XG_FEATURES}
+    for i in range(n):
+        home, away = homes[i], aways[i]
+        out["home_roll_xg_for"][i] = mean_or_prior(xg_for[home])
+        out["home_roll_xg_against"][i] = mean_or_prior(xg_against[home])
+        out["away_roll_xg_for"][i] = mean_or_prior(xg_for[away])
+        out["away_roll_xg_against"][i] = mean_or_prior(xg_against[away])
+
+        h, a = hx[i], ax[i]
+        if pd.notna(h) and pd.notna(a):
+            xg_for[home].append(float(h)); xg_against[home].append(float(a))
+            xg_for[away].append(float(a)); xg_against[away].append(float(h))
+
+    for c in ROLL_XG_FEATURES:
+        df[c] = pd.Series(out[c], index=idxs).reindex(df.index).astype(float)
+    return df
+
+
 def add_features(
     df,
     rolling_window=DEFAULT_ROLLING_WINDOW,
@@ -626,7 +683,7 @@ def add_features(
     normalize_strengths=True,
     use_time_decay=True,
 ):
-    return compute_home_away_stats(
+    result = compute_home_away_stats(
         df,
         rolling_window=rolling_window,
         include_momentum=include_momentum,
@@ -634,6 +691,8 @@ def add_features(
         normalize_strengths=normalize_strengths,
         use_time_decay=use_time_decay,
     )
+    add_rolling_xg(result)
+    return result
 
 
 def build_pre_match_features(history_df, fixture, feature_cols):

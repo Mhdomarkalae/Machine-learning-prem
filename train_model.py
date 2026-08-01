@@ -13,7 +13,12 @@ except ImportError:
 
 from feature_engineering import add_features
 
-XG_FEATURES = ["elo_xg_diff"]
+# Leak-free replacement for elo_xg_diff: strictly backward-looking rolling mean
+# xG for/against over each team's previous 6 matches (see feature_engineering).
+XG_FEATURES = [
+    "home_roll_xg_for", "home_roll_xg_against",
+    "away_roll_xg_for", "away_roll_xg_against",
+]
 
 BASE_FEATURES = [
     "home_elo_before", "away_elo_before", "elo_diff",
@@ -121,14 +126,20 @@ def main():
 
     df[FULL_FEATURES] = df[FULL_FEATURES].fillna(0.0)
 
-    test_mask = df["Date"] >= TEST_CUTOFF
+    # Clean chronological split: test = seasons 2023/24 and 2024/25 (760 matches);
+    # train = every match strictly before the test window.  This deliberately
+    # EXCLUDES 2025/26 (which falls after the test seasons) from both sides, so
+    # the model never sees the test seasons or anything later during training.
+    test_mask = df["Season"].astype(str).isin({"2023/24", "2024/25"})
+    earliest_test = df.loc[test_mask, "Date"].min()
+    train_mask = df["Date"] < earliest_test
 
-    train_df = df[~test_mask].copy()
+    train_df = df[train_mask].copy()
     test_df = df[test_mask].copy()
 
     print(f"Train rows: {len(train_df)}")
     print(f"Test rows: {len(test_df)}")
-    print(f"Test cutoff: {TEST_CUTOFF.date()} (inclusive)")
+    print(f"Excluded (2025/26, after test window): {int((~train_mask & ~test_mask).sum())}")
     print(f"Train dates: {train_df['Date'].min().date()} to {train_df['Date'].max().date()}")
     print(f"Test dates:  {test_df['Date'].min().date()} to {test_df['Date'].max().date()}")
 
