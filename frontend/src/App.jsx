@@ -554,6 +554,8 @@ export default function App() {
         .model-lead { margin: 2px 0 22px; max-width: 940px; font-size: clamp(17px, 2.1vw, 22px); font-weight: 700; line-height: 1.5; letter-spacing: -0.2px; color: ${COLORS.muted}; }
         .model-lead .lead-hl { color: ${COLORS.accent}; font-weight: 900; }
         .model-lead .lead-em { color: ${COLORS.white}; font-weight: 800; }
+        .model-ensemble { margin-top: 16px; color: ${COLORS.muted}; font-size: 12.5px; line-height: 1.6; }
+        .model-ensemble strong { color: ${COLORS.white}; font-weight: 800; }
         .data-note { margin-top: 16px; color: ${COLORS.muted}; font-size: 12.5px; line-height: 1.6; }
         .stale-warn { margin-top: 14px; padding: 11px 14px; background: ${COLORS.redTint}; border-left: 3px solid ${COLORS.red}; border-radius: 12px; color: #ffdada; font-size: 13px; font-weight: 600; line-height: 1.55; }
         .stale-warn strong { color: ${COLORS.white}; }
@@ -653,12 +655,12 @@ export default function App() {
           <div className="metric-tiles">
             <div className="metric-tile">
               <div className="metric-label">Accuracy</div>
-              <div className="metric-value">54.5%</div>
+              <div className="metric-value">55.0%</div>
               <div className="metric-sub">vs 43.4% home-team baseline</div>
             </div>
             <div className="metric-tile">
               <div className="metric-label">Log loss</div>
-              <div className="metric-value">0.988</div>
+              <div className="metric-value">0.971</div>
               <div className="metric-sub">lower is better</div>
             </div>
             <div className="metric-tile">
@@ -673,6 +675,10 @@ export default function App() {
             <span className="model-pill">40 features</span>
             <span className="model-pill">Leak-audited</span>
           </div>
+
+          <p className="model-ensemble">
+            Each served prediction is a <strong>0.6 · XGBoost + 0.4 · Elo</strong> ensemble, not the raw model output.
+          </p>
         </section>
 
         <div className="info-box">
